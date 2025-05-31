@@ -12,7 +12,6 @@ def generate_or_retrieve_qa(job_role: str):
     if existing:
         return existing, True
 
-    # Otherwise generate using LLM
     prompt_template = PromptTemplate(
         input_variables=["role"],
         template="""
@@ -33,6 +32,5 @@ A2: ...
     chain = LLMChain(llm=llm, prompt=prompt_template)
     result = chain.run(role=job_role)
 
-    # Store in vector DB
     add_job_to_vectorstore(job_role, result)
     return result, False
