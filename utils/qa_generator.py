@@ -1,113 +1,163 @@
 import os
+import hashlib
 import json
 from datetime import datetime
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import LLMChain
-from utils.vector_store import get_vectorstore, job_exists, add_job_to_vectorstore
+from langchain.schema.runnable import RunnableSequence
+from .vector_store import VectorStore
 
+# Load environment variables
+load_dotenv()
 
-def generate_or_retrieve_qa(job_role: str, interview_level="entry"):
+def generate_title_from_query(query: str) -> str:
     """
-    Generate or retrieve Q&A for a job role with specified interview level.
+    Generate a concise, suitable title for the chat history from the user's query/JD.
+    Uses the LLM to summarize the query into a short title (max 8 words).
+    """
+    try:
+        prompt_template = PromptTemplate(
+            input_variables=["query"],
+            template="""Given the following job description or query, generate a short, clear title (max 8 words) that best represents the role or topic. Do not use generic words like 'Job Description'.
+
+Examples:
+Input: 'We are looking for a Frontend Developer with experience in React and TypeScript...'
+Title: 'Frontend Developer (React, TypeScript)'
+
+Input: 'Seeking a Data Analyst to work on business intelligence and dashboarding...'
+Title: 'Data Analyst - BI & Dashboarding'
+
+Input: 'Cloud Architect with AWS and DevOps experience...'
+Title: 'Cloud Architect - AWS DevOps'
+
+Input: '{query}'
+Title:"""
+        )
+        
+        llm = ChatOpenAI(
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            temperature=0.3,
+            model="gpt-3.5-turbo"
+        )
+        
+        chain = LLMChain(llm=llm, prompt=prompt_template)
+        title = chain.run(query=query).strip()
+        
+        # Post-process to ensure title is not too long
+        if len(title.split()) > 8:
+            title = " ".join(title.split()[:8])
+            
+        return title if title else "Interview Questions"
+        
+    except Exception as e:
+        print(f"Error generating title: {e}")
+        # Fallback: extract key words from query
+        words = query.split()[:3]
+        return " ".join(words) if words else "Interview Questions"
+
+def create_unique_key(job_role: str, interview_level: str) -> str:
+    """Create a unique key for job role and level combination"""
+    # Clean and normalize the input
+    normalized_role = job_role.strip().lower()
+    normalized_level = interview_level.strip().lower()
+    
+    # Create a hash to ensure uniqueness while keeping it readable
+    combined = f"{normalized_role}_{normalized_level}"
+    hash_suffix = hashlib.md5(combined.encode()).hexdigest()[:8]
+    
+    return f"{normalized_role}_{normalized_level}_{hash_suffix}"
+
+def generate_or_retrieve_qa(job_description, interview_level="entry"):
+    """
+    Generate or retrieve Q&A for interview preparation
     
     Args:
-        job_role: The job role to generate questions for
-        interview_level: Level of interview difficulty (entry, mid, senior)
-        
+        job_description (str): Job description or role
+        interview_level (str): entry, mid, or senior
+    
     Returns:
-        Tuple of (qa_content, is_existing)
+        tuple: (qa_content, from_cache, title)
     """
-    vectorstore = get_vectorstore()
-    existing = job_exists(vectorstore, job_role)
-    if existing:
-        return existing, True
+    try:
+        # Initialize vector store
+        vector_store = VectorStore()
+        
+        # Create a title from job description
+        title = job_description[:50].strip() + ("..." if len(job_description) > 50 else "")
+        
+        # Try to retrieve from vector store first
+        cached_result = vector_store.search_similar(job_description, interview_level)
+        
+        if cached_result:
+            return cached_result, True, title
+        
+        # Generate new Q&A using LangChain
+        llm = ChatOpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0.7,
+            openai_api_key=os.getenv("OPENAI_API_KEY")
+        )
+        
+        prompt_template = PromptTemplate(
+            input_variables=["job_description", "interview_level"],
+            template="""
+            Create comprehensive interview questions and answers for the following job:
+            
+            Job Description: {job_description}
+            Interview Level: {interview_level}
+            
+            Generate 8-10 relevant questions with detailed answers covering:
+            1. Technical skills and knowledge
+            2. Problem-solving scenarios
+            3. Behavioral questions
+            4. Role-specific challenges
+            
+            Format the response in markdown with clear sections:
+            
+            ## Technical Questions
+            
+            **Q1: [Technical Question]**
+            A: [Detailed Answer]
+            
+            ## Problem-Solving Questions
+            
+            **Q2: [Problem-Solving Question]**
+            A: [Detailed Answer]
+            
+            ## Behavioral Questions
+            
+            **Q3: [Behavioral Question]**
+            A: [Detailed Answer]
+            
+            Continue this format for all questions.
+            """
+        )
+        
+        # Use the new RunnableSequence approach
+        chain = prompt_template | llm
+        result = chain.invoke({
+            "job_description": job_description,
+            "interview_level": interview_level
+        })
+        
+        qa_content = result.content
+        
+        # Store in vector database for future use
+        vector_store.add_document(job_description, qa_content, interview_level)
+        
+        return qa_content, False, title
+        
+    except Exception as e:
+        raise Exception(f"Error generating Q&A: {str(e)}")
 
-    interview_level_info = {
-        "entry": {
-            "description": "Entry-level (0-2 years of experience, SDE-1)",
-            "difficulty": "Focus on fundamentals, basic implementation, and understanding of core concepts. Include straightforward coding questions.",
-            "depth": "Questions should test fundamental knowledge and basic problem-solving abilities."
-        },
-        "mid": {
-            "description": "Mid-level (3-5 years of experience, SDE-2)",
-            "difficulty": "Include questions on system design, optimization, and deeper technical knowledge. Questions should explore trade-offs and best practices.",
-            "depth": "Questions should test both breadth and depth of knowledge, practical experience, and ability to make technical decisions."
-        },
-        "senior": {
-            "description": "Senior-level (5+ years of experience, SDE-3 or higher)",
-            "difficulty": "Focus on complex system design, architecture decisions, and leadership aspects. Include questions about scaling, performance, and technical strategy.",
-            "depth": "Questions should test advanced knowledge, experience with complex systems, technical leadership, and strategic thinking."
-        }
-    }
-    
-    level_info = interview_level_info.get(interview_level, interview_level_info["entry"])
-    
-    prompt_template = PromptTemplate(
-        input_variables=["role", "level_description", "difficulty", "depth"],
-        template="""
-You are a senior technical interviewer with 15+ years of experience in the tech industry.
-
-Generate 5 in-depth technical interview questions and detailed model answers for a {role} position at {level_description} level.
-{difficulty}
-
-Focus on industry best practices, real-world scenarios, and practical knowledge.
-
-Questions should:
-- Test both theoretical understanding and practical application
-- Include a mix of fundamental concepts and advanced topics
-- Cover relevant frameworks, tools, and technologies specific to the role
-- Include at least one problem-solving or coding question
-- Include at least one system design or architecture question (appropriate for the level)
-
-Answers should:
-- Be comprehensive and technically precise
-- Include examples where appropriate
-- Highlight best practices and common pitfalls
-- Demonstrate deep domain knowledge
-
-{depth}
-
-Make the content highly technical and reflective of current industry standards as of 2025.
-
-Format your response in rich markdown, including:
-- Properly formatted headings for each question
-- Code blocks with appropriate syntax highlighting
-- Bullet points for key concepts
-- Bold text for important terms
-- Tables where appropriate
-- Indented paragraphs for clarity
-"""
-    )
-
-    llm = ChatOpenAI(
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        temperature=0.5,  
-        model="gpt-3.5-turbo"  
-    )
-
-    chain = LLMChain(llm=llm, prompt=prompt_template)
-    result = chain.run(
-        role=job_role, 
-        level_description=level_info["description"],
-        difficulty=level_info["difficulty"],
-        depth=level_info["depth"]
-    )
-    
-    add_job_to_vectorstore(job_role, result)
-    
-    save_to_history(job_role, result, interview_level)
-    
-    return result, False
-
-
-def save_to_history(job_role, qa_content, interview_level="entry"):
-    """Save generated Q&A to history file with proper indentation"""
+def save_to_history(job_role, qa_content, interview_level="entry", title=None):
+    """Save generated Q&A to history file with proper formatting"""
     history_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "qa_history.json")
     
     entry = {
         "job_role": job_role,
+        "title": title if title else job_role[:50] + "..." if len(job_role) > 50 else job_role,
         "content": qa_content,
         "interview_level": interview_level,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -117,15 +167,15 @@ def save_to_history(job_role, qa_content, interview_level="entry"):
         history = []
         if os.path.exists(history_file) and os.path.getsize(history_file) > 0:
             try:
-                with open(history_file, "r") as f:
+                with open(history_file, "r", encoding='utf-8') as f:
                     history = json.load(f)
             except json.JSONDecodeError:
                 history = []
         
         history.append(entry)
         
-        with open(history_file, "w") as f:
-            json.dump(history, f, indent=2)
+        with open(history_file, "w", encoding='utf-8') as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
             
     except Exception as e:
         print(f"Error saving to history: {e}")

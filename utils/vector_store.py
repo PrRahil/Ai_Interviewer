@@ -1,58 +1,94 @@
-from langchain.vectorstores import Chroma
-from langchain.embeddings import OpenAIEmbeddings
 import os
-import uuid
-from dotenv import load_dotenv
+import hashlib
+import chromadb
+from langchain_openai import OpenAIEmbeddings
+from langchain_chroma import Chroma
+from langchain.schema import Document
 
-load_dotenv()
-
-CHROMA_DIR = "chroma_db"
+CHROMA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "chroma_db")
 
 def get_vectorstore():
-    """Get or create the vector store for storing and retrieving job Q&A data"""
+    """Initialize and return the vector store"""
+    os.makedirs(CHROMA_DIR, exist_ok=True)
     embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
     return Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings)
 
-def job_exists(vectorstore, job_role):
-    """
-    Check if Q&A for a job role already exists in the vector store
+class VectorStore:
+    def __init__(self):
+        self.vectorstore = get_vectorstore()
     
-    Args:
-        vectorstore: The vector store instance
-        job_role: The job role to search for
-        
-    Returns:
-        The Q&A content if found, None otherwise
-    """
-    docs = vectorstore.similarity_search(f"job role: {job_role}", k=2)
+    def _generate_doc_id(self, job_description, interview_level):
+        """Generate a unique document ID based on job description and level"""
+        content = f"{job_description.strip().lower()}_{interview_level}"
+        return hashlib.md5(content.encode()).hexdigest()
     
-    for doc in docs:
-        if 'job_role' in doc.metadata and doc.metadata['job_role'].lower() == job_role.lower():
-            return doc.page_content
-        
-        if job_role.lower() in doc.page_content.lower():
-            return doc.page_content
+    def add_document(self, job_description, qa_content, interview_level):
+        """Add a document to the vector store"""
+        try:
+            # Generate unique document ID
+            doc_id = self._generate_doc_id(job_description, interview_level)
+            
+            # Create metadata
+            metadata = {
+                "interview_level": interview_level,
+                "job_description": job_description[:500],  # Truncate for metadata
+                "doc_id": doc_id
+            }
+            
+            # Create document
+            doc = Document(
+                page_content=qa_content,
+                metadata=metadata
+            )
+            
+            # Add to vector store with unique ID
+            self.vectorstore.add_documents([doc], ids=[doc_id])
+            
+            return True
+        except Exception as e:
+            print(f"Error adding document to vector store: {e}")
+            return False
     
-    return None
-
-def add_job_to_vectorstore(job_role, qa_data):
-    """
-    Add job Q&A data to the vector store
+    def search_similar(self, job_description, interview_level, k=1, similarity_threshold=0.8):
+        """Search for similar documents in the vector store"""
+        try:
+            # First try to find exact match using document ID
+            doc_id = self._generate_doc_id(job_description, interview_level)
+            
+            # Perform similarity search with filter
+            results = self.vectorstore.similarity_search_with_score(
+                job_description, 
+                k=k,
+                filter={"interview_level": interview_level}
+            )
+            
+            if results and len(results) > 0:
+                doc, score = results[0]
+                # Check if it's a good match (lower scores mean higher similarity)
+                if score < (1 - similarity_threshold):
+                    return doc.page_content
+            
+            return None
+        except Exception as e:
+            print(f"Error searching vector store: {e}")
+            return None
     
-    Args:
-        job_role: The job role for the Q&A
-        qa_data: The Q&A content
-    """
-    vectorstore = get_vectorstore()
+    def delete_document(self, job_description, interview_level):
+        """Delete a document from the vector store"""
+        try:
+            doc_id = self._generate_doc_id(job_description, interview_level)
+            self.vectorstore.delete([doc_id])
+            return True
+        except Exception as e:
+            print(f"Error deleting document from vector store: {e}")
+            return False
     
-    metadata = {
-        "job_id": str(uuid.uuid4()),
-        "job_role": job_role,
-        "timestamp": os.environ.get("CURRENT_TIMESTAMP", ""),
-        "source": "ai-generated"
-    }
-    
-    vectorstore.add_texts([qa_data], metadatas=[metadata])
-    vectorstore.persist()
-    
-    return True
+    def get_all_documents(self):
+        """Get all documents from the vector store"""
+        try:
+            # This is a simple implementation - in practice you might want pagination
+            results = self.vectorstore.similarity_search("", k=100)  # Get up to 100 docs
+            return results
+        except Exception as e:
+            print(f"Error getting all documents from vector store: {e}")
+            return []
