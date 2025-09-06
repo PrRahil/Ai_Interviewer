@@ -7,3 +7,6 @@ chroma_db/
 Thumbs.db
 .streamlit/config.toml
 qa_history.json
+test_gemini.py
+vector_data.json
+embeddings.pkl
