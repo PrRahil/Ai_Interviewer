@@ -1,72 +1,21 @@
 import os
 import hashlib
-import json
-from datetime import datetime
-from dotenv import load_dotenv
+import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.schema.runnable import RunnableSequence
 from .vector_store import VectorStore
 
-# Load environment variables
-load_dotenv()
-
-def generate_title_from_query(query: str) -> str:
-    """
-    Generate a concise, suitable title for the chat history from the user's query/JD.
-    Uses the LLM to summarize the query into a short title (max 8 words).
-    """
+def get_openai_api_key():
+    """Get OpenAI API key from environment or Streamlit secrets"""
+    # Try to get from Streamlit secrets first (for cloud deployment)
     try:
-        prompt_template = PromptTemplate(
-            input_variables=["query"],
-            template="""Given the following job description or query, generate a short, clear title (max 8 words) that best represents the role or topic. Do not use generic words like 'Job Description'.
-
-Examples:
-Input: 'We are looking for a Frontend Developer with experience in React and TypeScript...'
-Title: 'Frontend Developer (React, TypeScript)'
-
-Input: 'Seeking a Data Analyst to work on business intelligence and dashboarding...'
-Title: 'Data Analyst - BI & Dashboarding'
-
-Input: 'Cloud Architect with AWS and DevOps experience...'
-Title: 'Cloud Architect - AWS DevOps'
-
-Input: '{query}'
-Title:"""
-        )
-        
-        llm = ChatOpenAI(
-            openai_api_key=os.getenv("OPENAI_API_KEY"),
-            temperature=0.3,
-            model="gpt-3.5-turbo"
-        )
-        
-        chain = LLMChain(llm=llm, prompt=prompt_template)
-        title = chain.run(query=query).strip()
-        
-        # Post-process to ensure title is not too long
-        if len(title.split()) > 8:
-            title = " ".join(title.split()[:8])
-            
-        return title if title else "Interview Questions"
-        
-    except Exception as e:
-        print(f"Error generating title: {e}")
-        # Fallback: extract key words from query
-        words = query.split()[:3]
-        return " ".join(words) if words else "Interview Questions"
-
-def create_unique_key(job_role: str, interview_level: str) -> str:
-    """Create a unique key for job role and level combination"""
-    # Clean and normalize the input
-    normalized_role = job_role.strip().lower()
-    normalized_level = interview_level.strip().lower()
-    
-    # Create a hash to ensure uniqueness while keeping it readable
-    combined = f"{normalized_role}_{normalized_level}"
-    hash_suffix = hashlib.md5(combined.encode()).hexdigest()[:8]
-    
-    return f"{normalized_role}_{normalized_level}_{hash_suffix}"
+        return st.secrets["OPENAI_API_KEY"]
+    except:
+        # Fallback to environment variable (for local development)
+        from dotenv import load_dotenv
+        load_dotenv()
+        return os.getenv("OPENAI_API_KEY")
 
 def generate_or_retrieve_qa(job_description, interview_level="entry"):
     """
@@ -80,6 +29,11 @@ def generate_or_retrieve_qa(job_description, interview_level="entry"):
         tuple: (qa_content, from_cache, title)
     """
     try:
+        # Get API key
+        api_key = get_openai_api_key()
+        if not api_key:
+            raise Exception("OpenAI API key not found. Please set OPENAI_API_KEY in secrets.")
+        
         # Initialize vector store
         vector_store = VectorStore()
         
@@ -96,7 +50,7 @@ def generate_or_retrieve_qa(job_description, interview_level="entry"):
         llm = ChatOpenAI(
             model="gpt-3.5-turbo",
             temperature=0.7,
-            openai_api_key=os.getenv("OPENAI_API_KEY")
+            openai_api_key=api_key
         )
         
         prompt_template = PromptTemplate(
@@ -150,32 +104,3 @@ def generate_or_retrieve_qa(job_description, interview_level="entry"):
         
     except Exception as e:
         raise Exception(f"Error generating Q&A: {str(e)}")
-
-def save_to_history(job_role, qa_content, interview_level="entry", title=None):
-    """Save generated Q&A to history file with proper formatting"""
-    history_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "qa_history.json")
-    
-    entry = {
-        "job_role": job_role,
-        "title": title if title else job_role[:50] + "..." if len(job_role) > 50 else job_role,
-        "content": qa_content,
-        "interview_level": interview_level,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    
-    try:
-        history = []
-        if os.path.exists(history_file) and os.path.getsize(history_file) > 0:
-            try:
-                with open(history_file, "r", encoding='utf-8') as f:
-                    history = json.load(f)
-            except json.JSONDecodeError:
-                history = []
-        
-        history.append(entry)
-        
-        with open(history_file, "w", encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-            
-    except Exception as e:
-        print(f"Error saving to history: {e}")

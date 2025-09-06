@@ -1,16 +1,27 @@
 import os
 import hashlib
-import chromadb
+import streamlit as st
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain.schema import Document
 
+# Use a temp directory for Streamlit Cloud
 CHROMA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "chroma_db")
+
+def get_openai_api_key():
+    """Get OpenAI API key from environment or Streamlit secrets"""
+    try:
+        return st.secrets["OPENAI_API_KEY"]
+    except:
+        from dotenv import load_dotenv
+        load_dotenv()
+        return os.getenv("OPENAI_API_KEY")
 
 def get_vectorstore():
     """Initialize and return the vector store"""
     os.makedirs(CHROMA_DIR, exist_ok=True)
-    embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
+    api_key = get_openai_api_key()
+    embeddings = OpenAIEmbeddings(openai_api_key=api_key)
     return Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings)
 
 class VectorStore:
