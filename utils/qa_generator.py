@@ -4,7 +4,7 @@ import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.schema.runnable import RunnableSequence
-from .vector_store import VectorStore
+from .simple_vector_store import SimpleVectorStore
 
 def get_openai_api_key():
     """Get OpenAI API key from environment or Streamlit secrets"""
@@ -34,8 +34,8 @@ def generate_or_retrieve_qa(job_description, interview_level="entry"):
         if not api_key:
             raise Exception("OpenAI API key not found. Please set OPENAI_API_KEY in secrets.")
         
-        # Initialize vector store
-        vector_store = VectorStore()
+        # Initialize simple vector store
+        vector_store = SimpleVectorStore()
         
         # Create a title from job description
         title = job_description[:50].strip() + ("..." if len(job_description) > 50 else "")
