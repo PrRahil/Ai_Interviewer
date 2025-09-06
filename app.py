@@ -488,7 +488,11 @@ if st.session_state.submitted and st.session_state.result:
     if st.session_state.from_cache:
         st.info("Retrieved from previous saved sessions")
     else:
+<<<<<<< HEAD
         st.success("Generated new Q/A.")
+=======
+        st.success("✅ Generated fresh via OpenAI API and stored.")
+>>>>>>> 1dbadc4ef07ac45f97c77f6d8657eac023b973a3
     
     # Display the Q&A content
     st.markdown(st.session_state.result)
